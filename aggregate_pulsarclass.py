@@ -5,6 +5,11 @@ import sys, os
 outfile_default = 'pulsar_aggregations.csv'
 rankfile_stem = 'subjects_ranked_by_weighted_class_asof_'
 
+# one entry:
+#{"id":27904,"name":"fastpulsar","section":"project-764","created_at":"2016-01-05T20:48:50.158Z","user_id":1362334,"comment_id":52863,"taggable_id":1299588,"taggable_type":"Subject","project_id":764,"user_login":"Emberfire"},
+talk_export_file = "project-764-tags_2016-01-13.json"
+
+project_team = 'bretonr jocelynbb spindizzy Simon_Rookyard Polzin cristina_ilie jamesy23 ADCameron Prabu walkcr roblyon chiatan llevin benjamin_shaw bhaswati djchampion jwbmartin bstappers aliburchard alexbfree ElisabethB Capella05 vrooje'.split()
 
 # define the active workflow - we will ignore all classifications not on this workflow
 # we could make this an input but let's not get too fancy for a specific case.
@@ -258,6 +263,23 @@ print("Reading classifications from %s ..." % classfile_in)
 
 classifications = pd.read_csv(classfile_in)
 
+print("Parsing Talk tag file for team tags %s ..." % talk_export_file)
+talkjson = json.loads(open(talk_export_file).read())
+talktags_all = pd.DataFrame(talkjson)
+# we only care about the Subject comments here, not discussions on the boards
+# also we only care about tags by the research team & moderators
+talktags = talktags_all[(talktags_all.taggable_type == "Subject") & (talktags_all.user_login.isin(project_team))]
+# make a username-tag pair column
+talktags['subject_id'] = [str(q) for q in talktags.taggable_id]
+talktags["user_tag"] = talktags.user_login+": #"+talktags.name+";"
+# when we're talking about Subject tags, taggable_id is subject_id
+talk_bysubj = talktags.groupby('subject_id')
+# this now contains all the project-team-written tags on each subject, 1 row per subject
+subj_tags = pd.DataFrame(talk_bysubj.user_tag.unique())
+# if we need this as an explicit column
+#subj_tags['subject_id'] = subj_tags.index
+
+
 print("Making new columns and getting user labels...")
 
 # first, extract the started_at and finished_at from the annotations column
@@ -309,6 +331,7 @@ this_workflow = classifications.workflow_id == active_workflow_id
 in_workflow = this_workflow & the_active_workflow
 classifications = classifications[in_workflow]
 
+print("Extracting filenames and subject types...")
 # extract whether this is a known pulsar or a candidate that needs classifying
 # the options are "cand" for "candidate", "known" for known pulsar, "disc" for ???
 # do this after you choose a workflow because #Class doesn't exist for the early subjects so it will break
@@ -452,8 +475,10 @@ class_agg = by_subject['weight count pulsar_classification subject_type filename
 #                   Write to files                    #
 #######################################################
 
-
+# add value-added columns
 class_agg['link'] = ['https://www.zooniverse.org/projects/zooniverse/pulsar-hunters/talk/subjects/'+str(q) for q in class_agg.index]
+class_agg_old = class_agg.copy()
+class_agg = pd.merge(class_agg_old, subj_tags, how='left', left_index=True, right_index=True, sort=False, copy=True)
 
 class_agg.sort_values(['subject_type','p_Yes_weight'], ascending=False, inplace=True)
 
@@ -473,7 +498,7 @@ class_agg.sort_values(['p_Yes_weight'], ascending=False, inplace=True)
 # rankfile_all = rankfile_stem + rightnow + ".csv"
 rankfile_all = 'all_'+rankfile_stem + last_class_time + ".csv"
 
-rank_cols = 'filename p_Yes_weight count_weighted p_Yes count_unweighted subject_type link'.split()
+rank_cols = 'filename p_Yes_weight count_weighted p_Yes count_unweighted subject_type link user_tag'.split()
 
 print("Writing full ranked list to file %s...\n" % rankfile_all)
 # write just the weighted yes percentage, the weighted count, the subject type, and the link to the subject page
@@ -491,10 +516,10 @@ pd.DataFrame(class_agg[rank_cols][classified_candidate]).to_csv(rankfile)
 # copy the candidate list into Google Drive so others can see it, overwriting previous versions
 cpfile = "/Users/vrooje/Google Drive/pulsar_hunters_share/candidates_ranked_by_classifications_%dclass.csv" % nclass_tot
 print("Copying to Google Drive folder as %s..." % cpfile)
-os.system("cp -f '%s' '%s'" % (rankfile, cpfile))
+#os.system("cp -f '%s' '%s'" % (rankfile, cpfile))
 
 cpfile2 = "/Users/vrooje/Google Drive/pulsar_hunters_share/all_subjects_ranked_by_classifications_%dclass.csv" % nclass_tot
 print("... and %s" % cpfile2)
-os.system("cp -f '%s' '%s'" % (rankfile_all, cpfile2))
+#os.system("cp -f '%s' '%s'" % (rankfile_all, cpfile2))
 
 #done.
