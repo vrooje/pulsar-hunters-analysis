@@ -371,6 +371,7 @@ if apply_weight > 0:
 
 nclass_mean   = np.mean(user_weights.nclass_user)
 nclass_median = np.median(user_weights.nclass_user)
+nclass_tot    = len(classifications)
 
 user_weights.sort_values(['nclass_user'], ascending=False, inplace=True)
 
@@ -381,7 +382,7 @@ user_weights.sort_values(['nclass_user'], ascending=False, inplace=True)
 #######################################################
 ## ## ## ## ## ## ##             ## ## ## ## ## ## ## #
 
-print("%d classifications from %d users, %d registered and %d unregistered.\n" % (len(classifications), n_user_tot, n_user_tot - n_user_unreg, n_user_unreg))
+print("%d classifications from %d users, %d registered and %d unregistered.\n" % (nclass_tot, n_user_tot, n_user_tot - n_user_unreg, n_user_unreg))
 print("Mean n_class per user %.1f, median %.1f." % (nclass_mean, nclass_median))
 if apply_weight > 0:
     print("Mean user weight %.3f, median %.3f, with the middle 50 percent of users between %.3f and %.3f." % (user_weight_mean, user_weight_median, user_weight_25pct, user_weight_75pct))
@@ -445,12 +446,13 @@ print("Writing candidate-only ranked list to file %s...\n" % rankfile)
 classified_candidate = (class_agg.count_weighted > 5) & (class_agg.subject_type == 'cand')
 pd.DataFrame(class_agg[rank_cols][classified_candidate]).to_csv(rankfile)
 
-print("Copying to Google Drive folder...")
 # copy the candidate list into Google Drive so others can see it, overwriting previous versions
-cpfile = "/Users/vrooje/Google Drive/pulsar_hunters_share/candidates_ranked_by_classifications.csv"
+cpfile = "/Users/vrooje/Google Drive/pulsar_hunters_share/candidates_ranked_by_classifications_%dclass.csv" % nclass_tot
+print("Copying to Google Drive folder as %s..." % cpfile)
 os.system("cp -f '%s' '%s'" % (rankfile, cpfile))
 
-cpfile2 = "/Users/vrooje/Google Drive/pulsar_hunters_share/all_subjects_ranked_by_classifications.csv"
+cpfile2 = "/Users/vrooje/Google Drive/pulsar_hunters_share/all_subjects_ranked_by_classifications_%dclass.csv" % nclass_tot
+print("... and %s" % cpfile2)
 os.system("cp -f '%s' '%s'" % (rankfile_all, cpfile2))
 
 #done.
