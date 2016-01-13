@@ -200,6 +200,38 @@ def get_n_gs(thegrp):
     return sum(pd.DataFrame(thegrp).seed != 0)
 
 
+
+def get_alternate_sessioninfo(row):
+
+    if not row[1]['user_name'].startswith('not-logged-in'):
+        return row[1]['user_name']
+    else:
+        metadata = row[1]['meta_json']
+        # session, if it exists
+        # (ip, agent, viewport_width, viewport_height) if session doesn't exist
+        try:
+            # start with "not-logged-in" so stuff later doesn't break
+            return str(row[1]['user_name']) +"_"+ str(metadata['session'])
+        except:
+            try:
+                viewport = str(metadata['viewport'])
+            except:
+                viewport = "NoViewport"
+
+            try:
+                user_agent = str(metadata['user_agent'])
+            except:
+                user_agent = "NoUserAgent"
+
+            try:
+                user_ip = str(row[1]['user_name'])
+            except:
+                user_ip = "NoUserIP"
+
+            thesession = user_ip + user_agent + viewport
+            return thesession
+
+
 #################################################################################
 #################################################################################
 #################################################################################
@@ -226,11 +258,20 @@ print("Reading classifications from %s ..." % classfile_in)
 
 classifications = pd.read_csv(classfile_in)
 
+print("Making new columns and getting user labels...")
+
 # first, extract the started_at and finished_at from the annotations column
 classifications['meta_json'] = [json.loads(q) for q in classifications.metadata]
 
 classifications['started_at_str']  = [q['started_at']  for q in classifications.meta_json]
 classifications['finished_at_str'] = [q['finished_at'] for q in classifications.meta_json]
+
+# we need to set up a new user id column that's login name if the classification is while logged in,
+# session if not (right now "user_name" is login name or hashed IP and, well, read on...)
+# in this particular run of this particular project, session is a better tracer of uniqueness than IP
+# for anonymous users, because of a bug with some back-end stuff that someone else is fixing
+# but we also want to keep the user name if it exists, so let's use this function
+classifications['user_label'] = [get_alternate_sessioninfo(q) for q in classifications.iterrows()]
 
 classifications['created_day'] = [q[:10] for q in classifications.created_at]
 
@@ -260,6 +301,7 @@ classifications['count'] = [1 for q in classifications.workflow_version]
 #######################################################
 # discard classifications not in the active workflow  #
 #######################################################
+print("Picking classifications from the active workflow (id %d, version %d.*)" % (active_workflow_id, active_workflow_major))
 # use any workflow consistent with this major version, e.g. 6.12 and 6.23 are both 6 so they're both ok
 # also check it's the correct workflow id
 the_active_workflow = [int(q) == active_workflow_major for q in classifications.workflow_version]
@@ -314,12 +356,12 @@ if apply_weight > 0:
     classifications.loc[oops_class, 'seed'] = oops_incr
 
     # then group classifications by user name, which will weight logged in as well as not-logged-in (the latter by session)
-    by_user = classifications.groupby('user_name')
+    by_user = classifications.groupby('user_label')
 
     user_exp = by_user.seed.aggregate('sum')
     user_weights = pd.DataFrame(user_exp)
     user_weights.columns = ['seed']
-    user_weights['user_name'] = user_weights.index
+    user_weights['user_label'] = user_weights.index
     user_weights['nclass_user'] = by_user['count'].aggregate('sum')
     user_weights['n_gs'] = by_user['is_gs'].aggregate('sum')
     user_weights['weight'] = [assign_weight(q, apply_weight) for q in user_weights.iterrows()]
@@ -334,16 +376,16 @@ if apply_weight > 0:
     # as they are, i.e. == 1 uniformly.
     classifications_old = classifications.copy()
     classifications = pd.merge(classifications_old, user_weights, how='left',
-                               on='user_name',
+                               on='user_label',
                                sort=False, suffixes=('_2', ''), copy=True)
 
 else:
     # just make a collated classification count array so we can print it to the screen
-    by_user = classifications.groupby('user_name')
+    by_user = classifications.groupby('user_label')
     user_exp = by_user.seed.aggregate('sum')
     user_weights = pd.DataFrame(user_exp)
     user_weights.columns = ['seed']
-    #user_weights['user_name'] = user_weights.index
+    #user_weights['user_label'] = user_weights.index
     user_weights['nclass_user'] = by_user['count'].aggregate('sum')
     user_weights['n_gs'] = by_user['is_gs'].aggregate('sum')
     # UNWEIGHTED
@@ -357,7 +399,7 @@ else:
 n_subj_tot  = len(classifications.subject_data.unique())
 by_subject = classifications.groupby('subject_id')
 subj_class = by_subject.created_at.aggregate('count')
-all_users  = classifications.user_name.unique()
+all_users  = classifications.user_label.unique()
 n_user_tot = len(all_users)
 n_user_unreg = sum([q.startswith('not-logged-in-') for q in all_users])
 
