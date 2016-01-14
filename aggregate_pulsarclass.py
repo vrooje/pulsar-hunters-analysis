@@ -5,11 +5,22 @@ import sys, os
 outfile_default = 'pulsar_aggregations.csv'
 rankfile_stem = 'subjects_ranked_by_weighted_class_asof_'
 
-# one entry:
-#{"id":27904,"name":"fastpulsar","section":"project-764","created_at":"2016-01-05T20:48:50.158Z","user_id":1362334,"comment_id":52863,"taggable_id":1299588,"taggable_type":"Subject","project_id":764,"user_login":"Emberfire"},
+# file with tags left in Talk, for value-added columns below
 talk_export_file = "project-764-tags_2016-01-13.json"
 
-project_team = 'bretonr jocelynbb spindizzy Simon_Rookyard Polzin cristina_ilie jamesy23 ADCameron Prabu walkcr roblyon chiatan llevin benjamin_shaw bhaswati djchampion jwbmartin bstappers aliburchard alexbfree ElisabethB Capella05 vrooje'.split()
+# file with master list between Zooniverse metadata image filename (no source coords) and
+# original filename with source coords and additional info
+# also I get to have a variable that uses "filename" twice where each means a different thing
+# a filename for a file full of filenames #alliterationbiyotch
+filename_master_list_filename = "HTRU-N_sets_keys.csv"
+
+# this is a list of possible matches to known pulsars that was done after the fact so they
+# are flagged as "cand" in the database instead of "known" etc.
+poss_match_file = 'PossibleMatches.csv'
+
+
+# later we will select on tags by the project team and possibly weight them differently
+project_team = 'bretonr jocelynbb spindizzy Simon_Rookyard Polzin cristina_ilie jamesy23 ADCameron Prabu walkcr roblyon chiatan llevin benjamin_shaw bhaswati djchampion jwbmartin bstappers aliburchard ElisabethB Capella05 vrooje'.split()
 
 # define the active workflow - we will ignore all classifications not on this workflow
 # we could make this an input but let's not get too fancy for a specific case.
@@ -280,6 +291,15 @@ subj_tags = pd.DataFrame(talk_bysubj.user_tag.unique())
 #subj_tags['subject_id'] = subj_tags.index
 
 
+print("Reading master list of matched filenames...")
+matched_filenames = pd.read_csv(filename_master_list_filename)
+
+print("Reading from list of possible matches to known pulsars...")
+# ['Zooniverse name', 'HTRU-N name', 'Possible source']
+possible_knowns = pd.read_csv(poss_match_file)
+possible_knowns['is_poss_known'] = [True for q in possible_knowns['Possible source']]
+
+
 print("Making new columns and getting user labels...")
 
 # first, extract the started_at and finished_at from the annotations column
@@ -478,7 +498,14 @@ class_agg = by_subject['weight count pulsar_classification subject_type filename
 # add value-added columns
 class_agg['link'] = ['https://www.zooniverse.org/projects/zooniverse/pulsar-hunters/talk/subjects/'+str(q) for q in class_agg.index]
 class_agg_old = class_agg.copy()
-class_agg = pd.merge(class_agg_old, subj_tags, how='left', left_index=True, right_index=True, sort=False, copy=True)
+class_agg_interm  = pd.merge(class_agg_old, subj_tags, how='left', left_index=True, right_index=True, sort=False, copy=True)
+class_agg_interm2 = pd.merge(class_agg_interm,  matched_filenames, how='left', left_on='filename', right_on='Pulsar Hunters File', sort=False, copy=True)
+class_agg         = pd.merge(class_agg_interm2, possible_knowns, how='left', left_on='filename', right_on='Zooniverse name', sort=False, copy=True)
+
+# fill in the is_poss_known column with False where it is currently NaN
+# currently it's either True or NaN - with pd.isnull NaN becomes True and True becomes False, so invert that.
+class_agg['is_poss_known'] = np.invert(pd.isnull(class_agg['is_poss_known']))
+
 
 class_agg.sort_values(['subject_type','p_Yes_weight'], ascending=False, inplace=True)
 
@@ -498,7 +525,7 @@ class_agg.sort_values(['p_Yes_weight'], ascending=False, inplace=True)
 # rankfile_all = rankfile_stem + rightnow + ".csv"
 rankfile_all = 'all_'+rankfile_stem + last_class_time + ".csv"
 
-rank_cols = 'filename p_Yes_weight count_weighted p_Yes count_unweighted subject_type link user_tag'.split()
+rank_cols = ['filename', 'p_Yes_weight', 'count_weighted', 'p_Yes', 'count_unweighted', 'subject_type', 'link', 'HTRU-N File', 'user_tag']
 
 print("Writing full ranked list to file %s...\n" % rankfile_all)
 # write just the weighted yes percentage, the weighted count, the subject type, and the link to the subject page
@@ -506,20 +533,33 @@ print("Writing full ranked list to file %s...\n" % rankfile_all)
 pd.DataFrame(class_agg[rank_cols]).to_csv(rankfile_all)
 
 
-rankfile = 'cand_'+rankfile_stem + last_class_time + ".csv"
+rankfile = 'cand_allsubj_'+rankfile_stem + last_class_time + ".csv"
 print("Writing candidate-only ranked list to file %s...\n" % rankfile)
 # also only include entries where there were at least 5 weighted votes tallied
 # and only "cand" subject_type objects
 classified_candidate = (class_agg.count_weighted > 5) & (class_agg.subject_type == 'cand')
 pd.DataFrame(class_agg[rank_cols][classified_candidate]).to_csv(rankfile)
 
-# copy the candidate list into Google Drive so others can see it, overwriting previous versions
-cpfile = "/Users/vrooje/Google Drive/pulsar_hunters_share/candidates_ranked_by_classifications_%dclass.csv" % nclass_tot
-print("Copying to Google Drive folder as %s..." % cpfile)
-#os.system("cp -f '%s' '%s'" % (rankfile, cpfile))
 
-cpfile2 = "/Users/vrooje/Google Drive/pulsar_hunters_share/all_subjects_ranked_by_classifications_%dclass.csv" % nclass_tot
-print("... and %s" % cpfile2)
-#os.system("cp -f '%s' '%s'" % (rankfile_all, cpfile2))
+rankfile_unk = 'cand_'+rankfile_stem + last_class_time + ".csv"
+print("Writing candidate-only, unknown-only ranked list to file %s...\n" % rankfile_unk)
+# also only include entries where there were at least 5 weighted votes tallied
+# and only "cand" subject_type objects
+classified_unknown_candidate = (classified_candidate) & (np.invert(class_agg.is_poss_known))
+pd.DataFrame(class_agg[rank_cols][classified_unknown_candidate]).to_csv(rankfile_unk)
+
+# copy the candidate list into Google Drive so others can see it, overwriting previous versions
+cpfile = "/Users/vrooje/Google Drive/pulsar_hunters_share/all_candidates_ranked_by_classifications_%dclass.csv" % nclass_tot
+print("Copying to Google Drive folder as %s..." % cpfile)
+os.system("cp -f '%s' '%s'" % (rankfile, cpfile))
+
+# and the unknown candidate sub-list
+cpfile2 = "/Users/vrooje/Google Drive/pulsar_hunters_share/unknown_candidates_ranked_by_classifications_%dclass.csv" % nclass_tot
+print("Copying to Google Drive folder as %s..." % cpfile2)
+os.system("cp -f '%s' '%s'" % (rankfile_unk, cpfile2))
+
+cpfile3 = "/Users/vrooje/Google Drive/pulsar_hunters_share/all_subjects_ranked_by_classifications_%dclass.csv" % nclass_tot
+print("... and %s" % cpfile3)
+os.system("cp -f '%s' '%s'" % (rankfile_all, cpfile3))
 
 #done.
