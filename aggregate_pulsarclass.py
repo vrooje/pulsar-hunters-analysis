@@ -6,7 +6,7 @@ outfile_default = 'pulsar_aggregations.csv'
 rankfile_stem = 'subjects_ranked_by_weighted_class_asof_'
 
 # file with tags left in Talk, for value-added columns below
-talk_export_file = "project-764-tags_2016-01-13.json"
+talk_export_file = "project-764-tags_2016-01-15.json"
 
 # file with master list between Zooniverse metadata image filename (no source coords) and
 # original filename with source coords and additional info
@@ -20,7 +20,7 @@ poss_match_file = 'PossibleMatches.csv'
 
 
 # later we will select on tags by the project team and possibly weight them differently
-project_team = 'bretonr jocelynbb spindizzy Simon_Rookyard Polzin cristina_ilie jamesy23 ADCameron Prabu walkcr roblyon chiatan llevin benjamin_shaw bhaswati djchampion jwbmartin bstappers aliburchard ElisabethB Capella05 vrooje'.split()
+project_team = 'bretonr jocelynbb spindizzy Simon_Rookyard Polzin cristina_ilie jamesy23 ADCameron Prabu walkcr roblyon chiatan llevin benjamin_shaw bhaswati djchampion jwbmartin bstappers ElisabethB Capella05 vrooje'.split()
 
 # define the active workflow - we will ignore all classifications not on this workflow
 # we could make this an input but let's not get too fancy for a specific case.
@@ -279,9 +279,10 @@ talkjson = json.loads(open(talk_export_file).read())
 talktags_all = pd.DataFrame(talkjson)
 # we only care about the Subject comments here, not discussions on the boards
 # also we only care about tags by the research team & moderators
-talktags = talktags_all[(talktags_all.taggable_type == "Subject") & (talktags_all.user_login.isin(project_team))]
+talktags = talktags_all[(talktags_all.taggable_type == "Subject") & (talktags_all.user_login.isin(project_team))].copy()
 # make a username-tag pair column
-talktags['subject_id'] = [str(q) for q in talktags.taggable_id]
+# subject id is a string in the classifications array so force it to be one here or the match won't work
+talktags['subject_id'] = [str(int(q)) for q in talktags.taggable_id]
 talktags["user_tag"] = talktags.user_login+": #"+talktags.name+";"
 # when we're talking about Subject tags, taggable_id is subject_id
 talk_bysubj = talktags.groupby('subject_id')
@@ -291,10 +292,10 @@ subj_tags = pd.DataFrame(talk_bysubj.user_tag.unique())
 #subj_tags['subject_id'] = subj_tags.index
 
 
-print("Reading master list of matched filenames...")
+print("Reading master list of matched filenames %s..." % filename_master_list_filename)
 matched_filenames = pd.read_csv(filename_master_list_filename)
 
-print("Reading from list of possible matches to known pulsars...")
+print("Reading from list of possible matches to known pulsars %s..." % poss_match_file)
 # ['Zooniverse name', 'HTRU-N name', 'Possible source']
 possible_knowns = pd.read_csv(poss_match_file)
 possible_knowns['is_poss_known'] = [True for q in possible_knowns['Possible source']]
@@ -313,7 +314,8 @@ classifications['finished_at_str'] = [q['finished_at'] for q in classifications.
 # in this particular run of this particular project, session is a better tracer of uniqueness than IP
 # for anonymous users, because of a bug with some back-end stuff that someone else is fixing
 # but we also want to keep the user name if it exists, so let's use this function
-classifications['user_label'] = [get_alternate_sessioninfo(q) for q in classifications.iterrows()]
+#classifications['user_label'] = [get_alternate_sessioninfo(q) for q in classifications.iterrows()]
+classifications['user_label'] = [get_alternate_sessioninfo(q) for q in classifications['user_name meta_json'.split()].iterrows()]
 
 classifications['created_day'] = [q[:10] for q in classifications.created_at]
 
@@ -355,8 +357,10 @@ print("Extracting filenames and subject types...")
 # extract whether this is a known pulsar or a candidate that needs classifying
 # the options are "cand" for "candidate", "known" for known pulsar, "disc" for ???
 # do this after you choose a workflow because #Class doesn't exist for the early subjects so it will break
-classifications['subject_type'] = [get_subject_type(q) for q in classifications.iterrows()]
-classifications['filename'] = [get_filename(q) for q in classifications.iterrows()]
+#classifications['subject_type'] = [get_subject_type(q) for q in classifications.iterrows()]
+#classifications['filename'] = [get_filename(q) for q in classifications.iterrows()]
+classifications['subject_type'] = [get_subject_type(q) for q in classifications['subject_id subject_json'.split()].iterrows()]
+classifications['filename'] = [get_filename(q) for q in classifications['subject_id subject_json'.split()].iterrows()]
 
 
 # this might be useful for a sanity check later
@@ -497,6 +501,8 @@ class_agg = by_subject['weight count pulsar_classification subject_type filename
 
 # add value-added columns
 class_agg['link'] = ['https://www.zooniverse.org/projects/zooniverse/pulsar-hunters/talk/subjects/'+str(q) for q in class_agg.index]
+# after we do the merges below the new indices might not be linked to the subject id, so save it explicitly
+class_agg['subject_id'] = [str(q) for q in class_agg.index]
 class_agg_old = class_agg.copy()
 class_agg_interm  = pd.merge(class_agg_old, subj_tags, how='left', left_index=True, right_index=True, sort=False, copy=True)
 class_agg_interm2 = pd.merge(class_agg_interm,  matched_filenames, how='left', left_on='filename', right_on='Pulsar Hunters File', sort=False, copy=True)
@@ -525,7 +531,7 @@ class_agg.sort_values(['p_Yes_weight'], ascending=False, inplace=True)
 # rankfile_all = rankfile_stem + rightnow + ".csv"
 rankfile_all = 'all_'+rankfile_stem + last_class_time + ".csv"
 
-rank_cols = ['filename', 'p_Yes_weight', 'count_weighted', 'p_Yes', 'count_unweighted', 'subject_type', 'link', 'HTRU-N File', 'user_tag']
+rank_cols = ['subject_id', 'filename', 'p_Yes_weight', 'count_weighted', 'p_Yes', 'count_unweighted', 'subject_type', 'link', 'user_tag', 'HTRU-N File']
 
 print("Writing full ranked list to file %s...\n" % rankfile_all)
 # write just the weighted yes percentage, the weighted count, the subject type, and the link to the subject page
