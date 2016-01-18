@@ -36,6 +36,13 @@ active_workflow_major = 4
 # do we want sum(weighted vote count) = sum(raw vote count)?
 normalise_weights = True
 
+
+# do we want to write an extra file with just classification counts and usernames
+# (and a random color column, for treemaps)?
+counts_out = True
+counts_out_file = 'class_counts_colors.csv'
+
+
 # file with raw classifications (csv)
 # put this way up here so if there are no inputs we exit quickly before even trying to load everything else
 try:
@@ -185,6 +192,20 @@ def gini(list_of_values):
     fair_area = height * len(list_of_values) / 2
     return (fair_area - area) / fair_area
 
+
+
+#################################################################################
+#################################################################################
+#################################################################################
+
+
+# assign a color randomly if logged in, gray otherwise
+def randcolor(user_label):
+    if user_label.startswith('not-logged-in-'):
+        return '#555555'
+    else:
+        r = lambda: random.randint(0,255)
+        return '#%02X%02X%02X' % (r(),r(),r())
 
 
 
@@ -465,6 +486,14 @@ nclass_tot    = len(classifications)
 user_weights.sort_values(['nclass_user'], ascending=False, inplace=True)
 
 
+
+if counts_out == True:
+    print("Printing classification counts to %s..." % counts_out_file)
+    user_weight['color'] = [randcolor(q) for q in user_weight.index]
+    user_weight.to_csv(counts_out_file)
+
+
+
 ## ## ## ## ## ## ##             ## ## ## ## ## ## ## #
 #######################################################
 #            Print out basic project info             #
@@ -481,6 +510,7 @@ else:
     cols_print = 'nclass_user'
 print("Classification leaderboard:")
 print(user_weights[cols_print].head(20))
+print("Gini coefficient for project: %.3f" % gini(user_weight['nclass_user']))
 
 
 
