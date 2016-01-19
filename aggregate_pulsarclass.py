@@ -167,7 +167,7 @@ def assign_weight(q, which_weight):
 
     elif which_weight == 2:
         if n_gs < 1: # don't divide by or take the log of 0
-            return 1.0
+            return c0
         else:
             return min([3.0, max([0.05, c0*pow((1.0 + np.log10(n_gs)), (float(seed)/float(n_gs)))])])
 
