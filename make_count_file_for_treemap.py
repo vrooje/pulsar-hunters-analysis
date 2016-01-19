@@ -11,8 +11,13 @@ countfile_out = 'class_counts_colors.csv'
 # assign a color randomly if logged in, gray otherwise
 def randcolor(user_label):
     if user_label.startswith('not-logged-in-'):
-        return '#555555'
+        # keep it confined to grays, i.e. R=G=B and not too bright, not too dark
+        g = random.randint(25,150)
+        return '#%02X%02X%02X' % (g,g,g)
+        #return '#555555'
     else:
+        # the lambda makes this generate a new int every time it's called, so that
+        # in general R != G != B below.
         r = lambda: random.randint(0,255)
         return '#%02X%02X%02X' % (r(),r(),r())
 
