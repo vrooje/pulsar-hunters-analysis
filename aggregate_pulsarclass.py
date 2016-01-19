@@ -1,6 +1,29 @@
 #Python 2.7.9 (default, Apr  5 2015, 22:21:35)
 import sys, os
 
+# file with raw classifications (csv)
+# put this way up here so if there are no inputs we exit quickly before even trying to load everything else
+try:
+    classfile_in = sys.argv[1]
+except:
+    #classfile_in = 'data/2e3d12a2-56ca-4d1f-930a-9ecc7fd39885.csv'
+    print("\nUsage: %s classifications_infile [weight_class aggregations_outfile]" % sys.argv[0])
+    print("      classifications_infile is a Zooniverse (Panoptes) classifications data export CSV.")
+    print("      weight_class is 1 if you want to calculate and apply user weightings, 0 otherwise.")
+    print("      aggregations_outfile is the name of the file you want written. If you don't specify,")
+    print("          the filename is %s by default." % outfile_default)
+    sys.exit(0)
+
+
+import numpy as np  # using 1.10.1
+import pandas as pd  # using 0.13.1
+#import datetime
+#import dateutil.parser
+import json
+
+
+############ Define files and settings below ##############
+
 # default outfile
 outfile_default = 'pulsar_aggregations.csv'
 rankfile_stem = 'subjects_ranked_by_weighted_class_asof_'
@@ -20,6 +43,10 @@ poss_match_file = 'PossibleMatches.csv'
 
 
 # later we will select on tags by the project team and possibly weight them differently
+# note I've included the moderators and myself (though I didn't tag anything).
+# Also note it's possible to do this in a more general fashion using a file with project users and roles
+# However, hard-coding seemed the thing to do given our time constraints (and the fact that I don't think
+# you can currently export the user role file from the project builder)
 project_team = 'bretonr jocelynbb spindizzy Simon_Rookyard Polzin cristina_ilie jamesy23 ADCameron Prabu walkcr roblyon chiatan llevin benjamin_shaw bhaswati djchampion jwbmartin bstappers ElisabethB Capella05 vrooje'.split()
 
 # define the active workflow - we will ignore all classifications not on this workflow
@@ -43,25 +70,10 @@ counts_out = True
 counts_out_file = 'class_counts_colors.csv'
 
 
-# file with raw classifications (csv)
-# put this way up here so if there are no inputs we exit quickly before even trying to load everything else
-try:
-    classfile_in = sys.argv[1]
-except:
-    #classfile_in = 'data/2e3d12a2-56ca-4d1f-930a-9ecc7fd39885.csv'
-    print("\nUsage: %s classifications_infile [weight_class aggregations_outfile]" % sys.argv[0])
-    print("      classifications_infile is a Zooniverse (Panoptes) classifications data export CSV.")
-    print("      weight_class is 1 if you want to calculate and apply user weightings, 0 otherwise.")
-    print("      aggregations_outfile is the name of the file you want written. If you don't specify,")
-    print("          the filename is %s by default." % outfile_default)
-    sys.exit(0)
 
 
-import numpy as np  # using 1.10.1
-import pandas as pd  # using 0.13.1
-#import datetime
-#import dateutil.parser
-import json
+
+############ Set the other inputs now ###############
 
 
 try:
@@ -79,11 +91,13 @@ except:
 #################################################################################
 #################################################################################
 #################################################################################
+# This is the function that actually does the aggregating
 
 def aggregate_class(grp):
     # translate the group to a dataframe because FML if I don't (some indexing etc is different)
     thegrp = pd.DataFrame(grp)
 
+    # figure out what we're looping over below
     answers = thegrp.pulsar_classification.unique()
 
     # aggregating is a matter of grouping by different answers and summing the counts/weights
@@ -108,12 +122,15 @@ def aggregate_class(grp):
     class_agg['filename']         = thegrp.filename.unique()[0]
 
     for a in answers:
+        # don't be that jerk who labels things with "p0" or otherwise useless internal indices.
+        # Use the text of the response next to this answer choice in the project builder (but strip spaces)
         raw_frac_label  = ('p_'+a).replace(' ', '_')
         wt_frac_label   = ('p_'+a+'_weight').replace(' ', '_')
 
         class_agg[raw_frac_label] = ans_ct_tot[a]/float(count_tot)
         class_agg[wt_frac_label]  = ans_wt_tot[a]/float(weight_tot)
 
+    # oops, this is hard-coded so that there's Yes and No as answers - sorry to those trying to generalise
     col_order = ["filename", "p_Yes", "p_No", "p_Yes_weight", "p_No_weight",
                  "count_unweighted", "count_weighted", "subject_type"]
 
@@ -127,6 +144,8 @@ def aggregate_class(grp):
 #################################################################################
 #################################################################################
 
+# The new weighting assignment function allows the user to choose between different weighting schemes
+# though note the one in this function is not preferred for reasons explained below.
 def assign_weight_old(seed):
     # keep the two seed cases separate because we might want to use a different base for each
     if seed < 0.:
@@ -142,6 +161,11 @@ def assign_weight_old(seed):
 # The number is just slightly offset from 1 so that it takes many classifications for
 # a user's potential weight to cap out at the max weight (3) or bottom out at the min (0.05).
 # Currently there are 641 "known" pulsars in the DB so the base of 1.025 is largely based on that.
+# Update: there are now about 5,000 simulated pulsars in the subject set as well, and they have a
+# much higher retirement limit, so that more people will have classified them and we have more info.
+
+# Note I'd rather this did a proper analysis with a confusion matrix etc but under a time crunch
+# we went with something simpler.
 
 def assign_weight(q, which_weight):
 
@@ -156,6 +180,14 @@ def assign_weight(q, which_weight):
     # Two possible weighting schemes:
     # which_weight == 1: w = 1.0025^(seed), bounded between 0.05 and 3.0
     # which_weight == 2: w = (1 + log n_gs)^(seed/n_gs), bounded between 0.05 and 3.0
+    #
+    # Weighting Scheme 1:
+    # this is an okay weighting scheme, but it doesn't account for the fact that someone might be prolific
+    # but not a very good classifier, and those classifiers shouldn't have a high weight.
+    # Example: Bob does 10000 gold-standard classifications and gets 5100 right, 4900 wrong.
+    # In this weighting scheme, Bob's weighting seed is +100, which means a weight of 1.0025^100 = 1.3,
+    # despite the fact that Bob's classifications are consistent with random within 1%.
+    # The weighting below this one would take the weight based on 100/10000, which is much better.
     if which_weight == 1:
         # keep the two seed cases separate because we might want to use a different base for each
         if seed < 0.:
@@ -167,11 +199,14 @@ def assign_weight(q, which_weight):
 
     elif which_weight == 2:
         if n_gs < 1: # don't divide by or take the log of 0
+            # also if they didn't do any gold-standard classifications assume they have the default weight
             return c0
         else:
+            # note the max of 3 is unlikely to be reached, but someone could hit the floor.
             return min([3.0, max([0.05, c0*pow((1.0 + np.log10(n_gs)), (float(seed)/float(n_gs)))])])
 
     else:
+        # unweighted - so maybe don't even enter this function if which_weight is not 1 or 2...
         return 1.0
 
 #################################################################################
@@ -217,6 +252,9 @@ def randcolor(user_label):
 #################################################################################
 #################################################################################
 #################################################################################
+# These are functions that extract information from the various JSONs that are
+# included in the classification exports. To Do: optimise these so that one .apply()
+# call will extract them for everything without so many &^%@$ing loops.
 
 def get_subject_type(q):
     try:
@@ -238,19 +276,23 @@ def get_filename(q):
                 return "filenotfound.png"
 
 
+# get number of gold-standard classifications completed by a user (used if weighting)
 def get_n_gs(thegrp):
     return sum(pd.DataFrame(thegrp).seed != 0)
 
 
-
+# Something went weird with IP addresses, so use more info to determine unique users
+# Note the user_name still has the IP address in it if the user is not logged in;
+# it's just that for this specific project it's not that informative.
 def get_alternate_sessioninfo(row):
 
+    # if they're logged in, save yourself all this trouble
     if not row[1]['user_name'].startswith('not-logged-in'):
         return row[1]['user_name']
     else:
         metadata = row[1]['meta_json']
-        # session, if it exists
-        # (ip, agent, viewport_width, viewport_height) if session doesn't exist
+        # IP + session, if it exists
+        # (IP, agent, viewport_width, viewport_height) if session doesn't exist
         try:
             # start with "not-logged-in" so stuff later doesn't break
             return str(row[1]['user_name']) +"_"+ str(metadata['session'])
@@ -286,20 +328,25 @@ print("   infile: %s" % classfile_in)
 print("   weighted? %d" % apply_weight)
 print("  Will print to %s after processing." % outfile)
 
+
+
 #################################################################################
 #################################################################################
 #################################################################################
-
-
-
-
-# Begin the main stuff
-
-
+#
+#
+#
+#
+# Begin the main work
+#
+#
+#
+#
 print("Reading classifications from %s ..." % classfile_in)
 
-classifications = pd.read_csv(classfile_in)
+classifications = pd.read_csv(classfile_in) # this step can take a few minutes for a big file
 
+# Talk tags are not usually huge files so this doesn't usually take that long
 print("Parsing Talk tag file for team tags %s ..." % talk_export_file)
 talkjson = json.loads(open(talk_export_file).read())
 talktags_all = pd.DataFrame(talkjson)
@@ -318,6 +365,7 @@ subj_tags = pd.DataFrame(talk_bysubj.user_tag.unique())
 #subj_tags['subject_id'] = subj_tags.index
 
 
+# likewise reading this matched files doesn't take long even though we have a for loop.
 print("Reading master list of matched filenames %s..." % filename_master_list_filename)
 matched_filenames = pd.read_csv(filename_master_list_filename)
 
@@ -327,6 +375,11 @@ possible_knowns = pd.read_csv(poss_match_file)
 possible_knowns['is_poss_known'] = [True for q in possible_knowns['Possible source']]
 
 
+# This section takes quite a while and it's because we have so many for loops, which I think is
+# in part because reading out of a dict from a column in a DataFrame needs loops when done this way
+# and in part because we were in a rush.
+# I think it's possible we could pass this to a function and reshape things there, then return
+# a set of new columns - but I didn't have time to figure that out under the deadlines we had.
 print("Making new columns and getting user labels...")
 
 # first, extract the started_at and finished_at from the annotations column
@@ -347,11 +400,18 @@ classifications['created_day'] = [q[:10] for q in classifications.created_at]
 
 # Get subject info into a format we can actually use
 classifications['subject_json'] = [json.loads(q) for q in classifications.subject_data]
-# extract the subject ID because that's useful later
+
+# extract the subject ID because that's needed later
+# Note the subject ID becomes the *index* of the dict, which is actually pretty strange versus
+# everything else in the export, and I'd really rather it be included here as "subject_id":"1234567" etc.
+#
+# You can isolate the keys as a new column but then it's a DictKey type, but stringifying it adds
+# all these other characters that you then have to take out. Thankfully all our subject IDs are numbers
 # this is a little weird and there must be a better way but... it works
 classifications['subject_id'] = [str(q.keys()).replace("dict_keys(['", "").replace("'])", '') for q in classifications.subject_json]
 # extract retired status, though not sure we're actually going to use it.
 # also, what a mess - you have to extract the subject ID first and then use it to call the subject_json. UGH
+# update: we didn't use it and each of these lines takes ages, so commenting it out
 #classifications['retired'] = [q[1].subject_json[q[1].subject_id]['retired'] for q in classifications.iterrows()]
 
 
@@ -364,7 +424,7 @@ classifications['pulsar_classification'] = [q[0]['value'] for q in classificatio
 
 # create a weight parameter but set it to 1.0 for all classifications (unweighted) - may change later
 classifications['weight'] = [1.0 for q in classifications.workflow_version]
-# also create a count parameter, because at the time of writing this aggregate('count') was sometimes off by 1
+# also create a count parameter, because at the time of writing this .aggregate('count') was sometimes off by 1
 classifications['count'] = [1 for q in classifications.workflow_version]
 
 
@@ -377,21 +437,36 @@ print("Picking classifications from the active workflow (id %d, version %d.*)" %
 the_active_workflow = [int(q) == active_workflow_major for q in classifications.workflow_version]
 this_workflow = classifications.workflow_id == active_workflow_id
 in_workflow = this_workflow & the_active_workflow
+# note I haven't saved the full DF anywhere because of memory reasons, so if you're debugging:
+# classifications_all = classifications.copy()
 classifications = classifications[in_workflow]
 
 print("Extracting filenames and subject types...")
-# extract whether this is a known pulsar or a candidate that needs classifying
-# the options are "cand" for "candidate", "known" for known pulsar, "disc" for ???
+# extract whether this is a known pulsar or a candidate that needs classifying - that info is in the
+# "#Class" column in the subject metadata (where # means it can't be seen by classifiers).
+# the options are "cand" for "candidate", "known" for known pulsar, "disc" for a pulsar that has been
+# discovered by this team but is not yet published
 # do this after you choose a workflow because #Class doesn't exist for the early subjects so it will break
+# also don't send the entirety of classifications into the function, to save memory
 #classifications['subject_type'] = [get_subject_type(q) for q in classifications.iterrows()]
 #classifications['filename'] = [get_filename(q) for q in classifications.iterrows()]
 classifications['subject_type'] = [get_subject_type(q) for q in classifications['subject_id subject_json'.split()].iterrows()]
 classifications['filename'] = [get_filename(q) for q in classifications['subject_id subject_json'.split()].iterrows()]
+# Let me just pause a second to rant again about the fact that subject ID is the index of the subject_json.
+# Because of that, because the top-level access to that was-json-now-a-dict requires the subject id rather than
+# just being label:value pairs, I have to do an iterrows() and send part of the entire classifications DF into
+# a loop so that I can simultaneously access each subject ID *and* the dict, rather than just accessing the
+# info from the dict directly, which would be much faster.
+
 
 
 # this might be useful for a sanity check later
 # first_class_day = min(classifications.created_day).replace(' ', '')
 # last_class_day  = max(classifications.created_day).replace(' ', '')
+# for some reason this is reporting last-classification dates that are days after the actual last
+# classification. Not sure? Might be because this is a front-end reporting, so if someone has set
+# their computer's time wrong we could get the wrong time here.
+# could fix that by using created_at but ... I forgot.
 last_class_time = max(classifications.finished_at_str)[:16].replace(' ', '_').replace('T', '_').replace(':', 'h')+"m"
 
 
@@ -431,7 +506,9 @@ if apply_weight > 0:
     # then group classifications by user name, which will weight logged in as well as not-logged-in (the latter by session)
     by_user = classifications.groupby('user_label')
 
+    # get the user's summed seed, which goes into the exponent for the weight
     user_exp = by_user.seed.aggregate('sum')
+    # then set up the DF that will contain the weights etc, and fill it
     user_weights = pd.DataFrame(user_exp)
     user_weights.columns = ['seed']
     user_weights['user_label'] = user_weights.index
@@ -440,11 +517,12 @@ if apply_weight > 0:
     user_weights['weight'] = [assign_weight(q, apply_weight) for q in user_weights.iterrows()]
     #user_weights['weight'] = [assign_weight_old(q) for q in user_exp]
 
+    # if you want sum(unweighted classification count) == sum(weighted classification count), do this
     if normalise_weights:
         user_weights.weight *= float(len(classifications))/float(sum(user_weights.weight * user_weights.nclass_user))
 
     # weights are assigned, now need to match them up to the main classifications table
-    # making sure that this weight keeps the name 'weight' and the other gets renamed
+    # making sure that this weight keeps the name 'weight' and the other gets renamed (suffixes flag)
     # if assign_weight == 0 then we won't enter this loop and the old "weights" will stay
     # as they are, i.e. == 1 uniformly.
     classifications_old = classifications.copy()
@@ -476,6 +554,7 @@ all_users  = classifications.user_label.unique()
 n_user_tot = len(all_users)
 n_user_unreg = sum([q.startswith('not-logged-in-') for q in all_users])
 
+# obviously if we didn't weight then we don't need to get stats on weights
 if apply_weight > 0:
     user_weight_mean   = np.mean(user_weights.weight)
     user_weight_median = np.median(user_weights.weight)
@@ -491,7 +570,8 @@ nclass_tot    = len(classifications)
 user_weights.sort_values(['nclass_user'], ascending=False, inplace=True)
 
 
-
+# If you want to print out a file of classification counts per user, with colors for making a treemap
+# honestly I'm not sure why you wouldn't want to print this, as it's very little extra effort
 if counts_out == True:
     print("Printing classification counts to %s..." % counts_out_file)
     user_weight['color'] = [randcolor(q) for q in user_weight.index]
@@ -513,6 +593,8 @@ if apply_weight > 0:
     cols_print = 'nclass_user weight'.split()
 else:
     cols_print = 'nclass_user'
+# don't make this leaderboard public unless you want to gamify your users in ways we already know
+# have unintended and sometimes negative consequences. This is just for your information.
 print("Classification leaderboard:")
 print(user_weights[cols_print].head(20))
 print("Gini coefficient for project: %.3f" % gini(user_weight['nclass_user']))
@@ -533,21 +615,25 @@ class_agg = by_subject['weight count pulsar_classification subject_type filename
 #######################################################
 #                   Write to files                    #
 #######################################################
-
+#
 # add value-added columns
+#
+# let people look up the subject on Talk directly from the aggregated file
 class_agg['link'] = ['https://www.zooniverse.org/projects/zooniverse/pulsar-hunters/talk/subjects/'+str(q) for q in class_agg.index]
 # after we do the merges below the new indices might not be linked to the subject id, so save it explicitly
 class_agg['subject_id'] = [str(q) for q in class_agg.index]
+# match up all the ancillary file data. Maybe there's a faster way to do this than with a chain but meh,
+# it's actually not *that* slow compared to the clusterf*ck of for loops in the column assignment part above
 class_agg_old = class_agg.copy()
 class_agg_interm  = pd.merge(class_agg_old, subj_tags, how='left', left_index=True, right_index=True, sort=False, copy=True)
 class_agg_interm2 = pd.merge(class_agg_interm,  matched_filenames, how='left', left_on='filename', right_on='Pulsar Hunters File', sort=False, copy=True)
 class_agg         = pd.merge(class_agg_interm2, possible_knowns, how='left', left_on='filename', right_on='Zooniverse name', sort=False, copy=True)
 
 # fill in the is_poss_known column with False where it is currently NaN
-# currently it's either True or NaN - with pd.isnull NaN becomes True and True becomes False, so invert that.
+# currently it's either True or NaN -- with pd.isnull NaN becomes True and True becomes False, so invert that.
 class_agg['is_poss_known'] = np.invert(pd.isnull(class_agg['is_poss_known']))
 
-
+# make the list ranked by p_Yes_weight
 class_agg.sort_values(['subject_type','p_Yes_weight'], ascending=False, inplace=True)
 
 
@@ -566,6 +652,7 @@ class_agg.sort_values(['p_Yes_weight'], ascending=False, inplace=True)
 # rankfile_all = rankfile_stem + rightnow + ".csv"
 rankfile_all = 'all_'+rankfile_stem + last_class_time + ".csv"
 
+# there go those hard-coded columns again
 rank_cols = ['subject_id', 'filename', 'p_Yes_weight', 'count_weighted', 'p_Yes', 'count_unweighted', 'subject_type', 'link', 'user_tag', 'HTRU-N File']
 
 print("Writing full ranked list to file %s...\n" % rankfile_all)
@@ -590,6 +677,8 @@ classified_unknown_candidate = (classified_candidate) & (np.invert(class_agg.is_
 pd.DataFrame(class_agg[rank_cols][classified_unknown_candidate]).to_csv(rankfile_unk)
 
 # copy the candidate list into Google Drive so others can see it, overwriting previous versions
+# Note: this is the way I instantly shared the new aggregated results with collaborators, because
+# Google Drive automatically syncs with the online version. Dropbox would work too, etc. YMMV
 cpfile = "/Users/vrooje/Google Drive/pulsar_hunters_share/all_candidates_ranked_by_classifications_%dclass.csv" % nclass_tot
 print("Copying to Google Drive folder as %s..." % cpfile)
 os.system("cp -f '%s' '%s'" % (rankfile, cpfile))
@@ -599,6 +688,7 @@ cpfile2 = "/Users/vrooje/Google Drive/pulsar_hunters_share/unknown_candidates_ra
 print("Copying to Google Drive folder as %s..." % cpfile2)
 os.system("cp -f '%s' '%s'" % (rankfile_unk, cpfile2))
 
+# and just for the record, all subjects.
 cpfile3 = "/Users/vrooje/Google Drive/pulsar_hunters_share/all_subjects_ranked_by_classifications_%dclass.csv" % nclass_tot
 print("... and %s" % cpfile3)
 os.system("cp -f '%s' '%s'" % (rankfile_all, cpfile3))
